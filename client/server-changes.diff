@@ -1,0 +1,9 @@
+--- server/main.py
++++ server/main.py
+@@
+ from mealdb import (
+-    search_by_name, filter_by_area, filter_by_category,
++    search_by_name, filter_by_area, filter_by_category, filter_by_ingredient,
+     lookup_by_id, list_areas, list_categories, list_ingredients,
+     random_meal, MealDBError,
+ )
