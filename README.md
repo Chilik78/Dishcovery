@@ -200,6 +200,7 @@ http://localhost:3000
 | GET | `/api/recipes` | Поиск и подборка рецептов |
 | GET | `/api/recipes/{id}` | Детальная информация о рецепте |
 | GET | `/api/recipes/random` | Случайный рецепт |
+| POST | `/api/recipes/{id}/steps` | Пошаговая инструкция на русском через Yandex Cloud Functions и YandexGPT |
 
 Пример:
 
@@ -322,3 +323,4 @@ TheMealDB не предоставляет достоверные значени�
 
 - [Client README](client/README.md)
 - [Server README](server/README.md)
+- [Развёртывание облачной функции для пошаговых инструкций](cloud/recipe-steps/README.md)
