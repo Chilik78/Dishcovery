@@ -1,10 +1,16 @@
-import httpx
+import ssl
 from typing import Any
+
+import httpx
 from config import settings
 from cache import cache_get, cache_set
 
 
 class MealDBError(Exception):
+    pass
+
+
+class MealDBTimeout(MealDBError):
     pass
 
 
@@ -18,12 +24,14 @@ async def _get(path: str, params: dict | None = None) -> dict[str, Any]:
     if (cached := cache_get(cache_key)) is not None:
         return cached
 
-    async with httpx.AsyncClient(timeout=settings.http_timeout) as client:
+    async with httpx.AsyncClient(timeout=settings.http_timeout, verify=ssl.create_default_context()) as client:
         try:
             r = await client.get(url, params=params)
             r.raise_for_status()
+        except httpx.TimeoutException as e:
+            raise MealDBTimeout() from e
         except httpx.HTTPError as e:
-            raise MealDBError(str(e)) from e
+            raise MealDBError() from e
 
     data = r.json()
     cache_set(cache_key, data)
