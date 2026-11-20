@@ -2,16 +2,18 @@ from typing import Optional
 import asyncio
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from config import settings
-from schemas import RecipeOut, RecipeListOut, FilterMeta, HealthOut
+from schemas import RecipeOut, RecipeListOut, FilterMeta, HealthOut, RecipeStepsErrorOut, RecipeStepsOut
 from mealdb import (
     search_by_name, filter_by_area, filter_by_category,
     filter_by_ingredient, lookup_by_id, list_areas, list_categories,
-    list_ingredients, random_meal, MealDBError,
+    list_ingredients, random_meal, MealDBError, MealDBTimeout,
 )
 from mapper import to_client_recipe, AREA_MAP, CATEGORY_MAP
 from pantry import enrich_with_pantry, filter_only_available
+from recipe_steps import generate_recipe_steps
 
 app = FastAPI(
     title="Dishcovery API",
@@ -26,6 +28,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(MealDBError)
+async def mealdb_error_handler(_request, exc: MealDBError) -> JSONResponse:
+    if isinstance(exc, MealDBTimeout):
+        return JSONResponse(status_code=504, content={"detail": "TheMealDB не ответил вовремя."})
+    return JSONResponse(status_code=502, content={"detail": "Не удалось получить данные из TheMealDB."})
 
 
 def _parse_pantry(pantry: Optional[str]) -> list[str]:
@@ -195,35 +204,31 @@ async def list_recipes(
     limit: int = Query(24, ge=1, le=60),
     offset: int = Query(0, ge=0),
 ):
-    try:
-        refs = await _collect_meals(q, cuisine, dish_type, ingredient)
-        refs = await _dedupe_refs(refs)
+    refs = await _collect_meals(q, cuisine, dish_type, ingredient)
+    refs = await _dedupe_refs(refs)
 
-        pantry_list = _parse_pantry(pantry)
+    pantry_list = _parse_pantry(pantry)
 
-        # Pantry mode needs ingredients of every candidate to calculate missing
-        # and only_pantry correctly. Without it, load details only for this page.
-        if only_pantry and pantry_list:
-            raw = await _load_full_meals(refs)
-            recipes = enrich_with_pantry(raw, pantry_list)
-            recipes = filter_only_available(recipes)
-            recipes = _apply_client_filters(recipes, max_time, diet, difficulty)
-            unique: dict[str, dict] = {str(r["id"]): r for r in recipes}
-            recipes = list(unique.values())
-            total = len(recipes)
-            page = recipes[offset:offset + limit]
-            return {"items": page, "total": total}
-
-        # Total of the recipe candidate pool is known before loading details.
-        total = len(refs)
-        page_refs = refs[offset:offset + limit]
-        raw = await _load_full_meals(page_refs)
-        recipes = enrich_with_pantry(raw, pantry_list) if pantry_list else [to_client_recipe(m) for m in raw]
+    # Pantry mode needs ingredients of every candidate to calculate missing
+    # and only_pantry correctly. Without it, load details only for this page.
+    if only_pantry and pantry_list:
+        raw = await _load_full_meals(refs)
+        recipes = enrich_with_pantry(raw, pantry_list)
+        recipes = filter_only_available(recipes)
         recipes = _apply_client_filters(recipes, max_time, diet, difficulty)
-        return {"items": recipes, "total": total}
+        unique: dict[str, dict] = {str(r["id"]): r for r in recipes}
+        recipes = list(unique.values())
+        total = len(recipes)
+        page = recipes[offset:offset + limit]
+        return {"items": page, "total": total}
 
-    except MealDBError as e:
-        raise HTTPException(502, f"Upstream error: {e}")
+    # Total of the recipe candidate pool is known before loading details.
+    total = len(refs)
+    page_refs = refs[offset:offset + limit]
+    raw = await _load_full_meals(page_refs)
+    recipes = enrich_with_pantry(raw, pantry_list) if pantry_list else [to_client_recipe(m) for m in raw]
+    recipes = _apply_client_filters(recipes, max_time, diet, difficulty)
+    return {"items": recipes, "total": total}
 
 
 @app.get("/api/recipes/random", response_model=RecipeOut)
@@ -240,6 +245,29 @@ async def recipe_detail(recipe_id: str):
     if not meal:
         raise HTTPException(404, "Recipe not found")
     return to_client_recipe(meal)
+
+
+@app.post(
+    "/api/recipes/{recipe_id}/steps",
+    response_model=RecipeStepsOut,
+    summary="Преобразовать рецепт в пошаговую инструкцию",
+    description=(
+        "По ID рецепта из TheMealDB преобразует исходную инструкцию в список шагов на русском. "
+        "При повторном запросе для того же текста сервер может вернуть результат из кэша."
+    ),
+    responses={
+        404: {"model": RecipeStepsErrorOut, "description": "Рецепт не найден или у него нет инструкции."},
+        502: {"model": RecipeStepsErrorOut, "description": "Ошибка TheMealDB или облачной функции."},
+        503: {"model": RecipeStepsErrorOut, "description": "Облачная функция не настроена или недоступна."},
+        504: {"model": RecipeStepsErrorOut, "description": "Превышено время ожидания TheMealDB или генерации."},
+    },
+)
+async def recipe_steps(recipe_id: str):
+    recipe = await recipe_detail(recipe_id)
+    instructions = recipe["instructions"].strip()
+    if not instructions:
+        raise HTTPException(404, "У рецепта нет исходной инструкции.")
+    return await generate_recipe_steps(recipe["title"], instructions)
 
 
 if __name__ == "__main__":
