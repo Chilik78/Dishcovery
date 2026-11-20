@@ -55,6 +55,9 @@ export const api = {
     return request<RecipeList>(`/recipes${qs(params)}`)
   },
   recipe(id: string) { return request<Recipe>(`/recipes/${encodeURIComponent(id)}`) },
+  recipeSteps(id: string) {
+    return request<{ steps: string[] }>(`/recipes/${encodeURIComponent(id)}/steps`, { method: 'POST' })
+  },
   random() { return request<Recipe>('/recipes/random') },
   meta() { return request<Meta>('/meta') },
   pantryIngredients() { return request<{ items: string[] }>('/pantry/ingredients') },
